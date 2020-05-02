@@ -24,7 +24,7 @@ fn main() {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Type {
   name: String,
   byte_size: u64,
@@ -36,13 +36,22 @@ impl Type {
   }
 }
 
-#[derive(Debug)]
+// For variables and formal parameters
+#[derive(Debug, Default)]
 pub struct Variable {
   name: String,
-  entity_type: Type,
-  location: usize,
-  filename: String,
-  line_number: usize,
+  entity_type: Option<Type>,
+  location: String,
+  file_name: String,
+  line_number: u64,
+}
+
+
+#[derive(Debug, Default)]
+pub struct Function {
+  name: String,
+  low_pc: u64,
+  high_pc: u64,
 }
 
 
@@ -75,6 +84,8 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
     // Define a mapping from type offsets to type structs
     let mut offset_to_type: HashMap<usize, Type> = HashMap::new();
 
+    let mut variable_list: Vec<Variable> = Vec::new();
+
     // Iterate over the compilation units.
     let mut iter = dwarf.units();
     while let Some(header) = iter.next()? {
@@ -87,7 +98,8 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
         while let Some((delta_depth, entry)) = entries.next_dfs()? {
             depth += delta_depth;
             println!("<{}><{:x}> {}", depth, entry.offset().0, entry.tag());
-            // Update the offset_to_type mapping 
+            // Update the offset_to_type mapping for types
+            // Update the variable list for formal params/variables
             match entry.tag() {
                 gimli::DW_TAG_base_type => {
                     let name = if let Ok(Some(attr)) = entry.attr(gimli::DW_AT_name) {
@@ -115,11 +127,55 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
                     };
                     let type_offset = entry.offset().0;
                     offset_to_type.insert(type_offset, Type::new(name, byte_size));
-                }, // TODO: add other types?
+                },
+                gimli::DW_TAG_formal_parameter | gimli::DW_TAG_variable  => {
+                    // Create Variable struct     
+                    let mut var: Variable = Default::default();
+                    let mut attrs = entry.attrs();
+                    while let Some(attr) = attrs.next()? {
+                        let val = get_attr_value(&attr, &unit, &dwarf);
+                        println!("   {}: {:?}", attr.name(), val);
+                        match attr.name() {
+                            gimli::DW_AT_name => {
+                                if let Ok(DebugValue::Str(name)) = val {
+                                    var.name = name;
+                                }
+                            },
+                            gimli::DW_AT_type => {
+                                if let Ok(DebugValue::Size(offset)) = val {
+                                    if let Some(dtype) = offset_to_type.get(&offset).clone() {
+                                        var.entity_type = Some(dtype.clone());
+                                    } else {
+                                        var.entity_type = None;
+                                    }
+                                }
+                            },
+                            gimli::DW_AT_location => {
+                                if let Ok(DebugValue::Str(loc)) = val {
+                                    var.location = loc;
+                                }
+                            },
+                            gimli::DW_AT_decl_file => {
+                                if let Ok(DebugValue::Str(file_name)) = val {
+                                    var.file_name = file_name;
+                                }
+                            },
+                            gimli::DW_AT_decl_line => {
+                                if let Ok(DebugValue::Uint(line_number)) = val {
+                                    var.line_number = line_number;
+                                }
+                            },
+                            _ => {},
+                        }
+                    }
+                    variable_list.push(var);
+                },
+                // TODO: add other types?
                 _ => {},
             } 
+            // TODO: remove the loop below?
             // Iterate over the attributes in the DIE.
-            let mut attrs = entry.attrs();
+            /*let mut attrs = entry.attrs();
             while let Some(attr) = attrs.next()? {
                 let val = get_attr_value(&attr, &unit, &dwarf);
                 println!("   {}: {:?}", attr.name(), val);
@@ -128,16 +184,17 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
                         println!("type: {:?}", offset_to_type.get(&offset));
                     }
                 }
-            }
+            }*/
         }
     }
     println!("offset_to_type: {:?}", offset_to_type);
+    println!("variable_list: {:?}", variable_list);
     Ok(())
 }
 
 #[derive(Debug, Clone)]
 pub enum DebugValue {
-  Str(String), Uint(u64), Size(usize), NoVal,
+  Str(String), Uint(u64), Int(i64), Size(usize), NoVal,
   
 }
 
@@ -231,6 +288,9 @@ fn get_attr_value<R: Reader>(
             Ok(DebugValue::Str(w.to_string()))
         }*/
 
+        gimli::AttributeValue::Sdata(data) => {
+            Ok(DebugValue::Int(data))
+        },
         gimli::AttributeValue::Udata(data) => {
             /*match attr.name() {
                 gimli::DW_AT_high_pc => {
@@ -271,6 +331,7 @@ fn get_attr_value<R: Reader>(
             Ok(DebugValue::Str(w.to_string()))
         }
         _ => { // Don't handle other values
+            println!("{:?}", attr.value());
             Ok(DebugValue::NoVal)
         }
     }
