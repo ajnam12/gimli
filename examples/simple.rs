@@ -52,6 +52,8 @@ pub struct Function {
   name: String,
   low_pc: u64,
   high_pc: u64,
+  file_name: String,
+  line_number: u64,
 }
 
 
@@ -85,6 +87,7 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
     let mut offset_to_type: HashMap<usize, Type> = HashMap::new();
 
     let mut variable_list: Vec<Variable> = Vec::new();
+    let mut function_list: Vec<Function> = Vec::new();
 
     // Iterate over the compilation units.
     let mut iter = dwarf.units();
@@ -128,13 +131,50 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
                     let type_offset = entry.offset().0;
                     offset_to_type.insert(type_offset, Type::new(name, byte_size));
                 },
+                gimli::DW_TAG_subprogram => {
+                    let mut func: Function = Default::default();
+                    let mut attrs = entry.attrs();
+                    while let Some(attr) = attrs.next()? {
+                        let val = get_attr_value(&attr, &unit, &dwarf);
+                        //println!("   {}: {:?}", attr.name(), val);
+                        match attr.name() {
+                            gimli::DW_AT_name => {
+                                if let Ok(DebugValue::Str(name)) = val {
+                                    func.name = name;
+                                }
+                            },
+                            gimli::DW_AT_high_pc => {
+                                if let Ok(DebugValue::Uint(high_pc)) = val {
+                                    func.high_pc = high_pc;
+                                }
+                            },
+                            gimli::DW_AT_low_pc => {
+                                //println!("low pc {:?}", attr.value());
+                                if let Ok(DebugValue::Uint(low_pc)) = val {
+                                    func.low_pc = low_pc;
+                                }
+                            },
+                            gimli::DW_AT_decl_file => {
+                                if let Ok(DebugValue::Str(file_name)) = val {
+                                    func.file_name = file_name;
+                                }
+                            },
+                            gimli::DW_AT_decl_line => {
+                                if let Ok(DebugValue::Uint(line_number)) = val {
+                                    func.line_number = line_number;
+                                }
+                            },
+                            _ => {},
+                        }
+                    }
+                    function_list.push(func);
+                },
                 gimli::DW_TAG_formal_parameter | gimli::DW_TAG_variable  => {
-                    // Create Variable struct     
                     let mut var: Variable = Default::default();
                     let mut attrs = entry.attrs();
                     while let Some(attr) = attrs.next()? {
                         let val = get_attr_value(&attr, &unit, &dwarf);
-                        println!("   {}: {:?}", attr.name(), val);
+                        //println!("   {}: {:?}", attr.name(), val);
                         match attr.name() {
                             gimli::DW_AT_name => {
                                 if let Ok(DebugValue::Str(name)) = val {
@@ -189,6 +229,7 @@ fn dump_file(object: &object::File, endian: gimli::RunTimeEndian) -> Result<(), 
     }
     println!("offset_to_type: {:?}", offset_to_type);
     println!("variable_list: {:?}", variable_list);
+    println!("function_list: {:?}", function_list);
     Ok(())
 }
 
@@ -290,6 +331,9 @@ fn get_attr_value<R: Reader>(
 
         gimli::AttributeValue::Sdata(data) => {
             Ok(DebugValue::Int(data))
+        },
+        gimli::AttributeValue::Addr(data) => {
+            Ok(DebugValue::Uint(data))
         },
         gimli::AttributeValue::Udata(data) => {
             /*match attr.name() {
